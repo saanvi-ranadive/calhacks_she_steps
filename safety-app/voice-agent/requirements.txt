@@ -1,2 +1,2 @@
-livekit-agents[anthropic,silero]>=1.2.0
+livekit-agents[openai]>=1.2.0
 python-dotenv>=1.0.0

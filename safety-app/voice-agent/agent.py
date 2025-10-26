@@ -1,50 +1,35 @@
-"""
-Simple LiveKit voice agent for safety app using Claude
-Run this locally to test the voice agent functionality
-"""
-from dotenv import load_dotenv
 from livekit import agents
-from livekit.agents import AgentSession, Agent
-from livekit.plugins import anthropic, silero
+from livekit.agents import Agent, AgentSession
+from livekit.plugins import openai, silero
 
-# Load environment variables from .env file in current directory
-load_dotenv()
+from livekit.plugins.openai import realtime
+from dotenv import load_dotenv
+from livekit.agents import AgentSession, inference
+
+
+load_dotenv(".env")
 
 class SafetyAssistant(Agent):
     def __init__(self) -> None:
         super().__init__(
-            instructions="""You are a helpful safety assistant for a women's safety app.
-            You can provide:
-            - Safety tips and recommendations
-            - Emergency contact information
-            - Directions to safe locations
-            - Real-time safety advice based on user location
-
-            Be concise, supportive, and prioritize user safety in all responses.
-            Keep responses short and conversational - aim for 1-2 sentences per response."""
+            instructions=(
+                "You are a helpful safety assistant for a women's safety app. "
+                "Be concise, supportive, and speak in short sentences."
+            )
         )
 
 async def entrypoint(ctx: agents.JobContext):
-    # Use Claude with STT-LLM-TTS pipeline
-    # STT and TTS use LiveKit Inference (no extra API keys needed!)
     session = AgentSession(
-        stt="deepgram/nova-2-general",  # Speech-to-text via LiveKit Inference
-        llm=anthropic.LLM(              # Claude for intelligence
-            model="claude-3-5-sonnet",
+        stt="deepgram/nova-2-general",
+        llm=openai.realtime.RealtimeModel(
+            model="gpt-4o-realtime-preview",
+            modalities=["text"]
         ),
-        tts="cartesia/sonic-english",   # Text-to-speech via LiveKit Inference
-        vad=silero.VAD.load(),          # Voice activity detection
+        tts="cartesia/sonic-2:9626c31c-bec5-4cca-baa8-f8ba9e84c8bc",
     )
 
-    await session.start(
-        room=ctx.room,
-        agent=SafetyAssistant(),
-    )
 
-    # Greet the user when they join
-    await session.generate_reply(
-        instructions="Greet the user warmly and let them know you're here to help with safety information and support."
-    )
+    await session.start(room=ctx.room, agent=SafetyAssistant())
 
 if __name__ == "__main__":
     agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint))
