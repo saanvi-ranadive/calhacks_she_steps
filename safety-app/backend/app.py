@@ -4,9 +4,19 @@ Simple Flask backend for risk classification
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import random
+import os
+from dotenv import load_dotenv
+from livekit import api
+
+load_dotenv()
 
 app = Flask(__name__)
 CORS(app)  # Allow React Native to call this API
+
+# LiveKit configuration
+LIVEKIT_API_KEY = os.getenv('LIVEKIT_API_KEY')
+LIVEKIT_API_SECRET = os.getenv('LIVEKIT_API_SECRET')
+LIVEKIT_URL = os.getenv('LIVEKIT_URL')
 
 # TODO: Replace this with your actual ML risk classification logic
 def get_risk_classification(latitude, longitude):
@@ -102,6 +112,49 @@ def get_heatmap():
     """
     grid = generate_sf_heatmap_grid()
     return jsonify({"grid": grid})
+
+
+@app.route('/api/voice-agent/token', methods=['POST'])
+def get_voice_agent_token():
+    """
+    Generate a LiveKit token for voice agent connection
+
+    POST body:
+    {
+        "roomName": "room-name",
+        "participantName": "user-name"
+    }
+    """
+    if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET:
+        return jsonify({
+            "error": "LiveKit credentials not configured. Please set LIVEKIT_API_KEY and LIVEKIT_API_SECRET in .env file"
+        }), 500
+
+    data = request.get_json()
+    room_name = data.get('roomName', f'safety-agent-{random.randint(1000, 9999)}')
+    participant_name = data.get('participantName', 'User')
+
+    try:
+        # Create access token
+        token = api.AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+        token.with_identity(participant_name)
+        token.with_name(participant_name)
+        token.with_grants(api.VideoGrants(
+            room_join=True,
+            room=room_name,
+            can_publish=True,
+            can_subscribe=True,
+        ))
+
+        jwt_token = token.to_jwt()
+
+        return jsonify({
+            "token": jwt_token,
+            "url": LIVEKIT_URL,
+            "roomName": room_name
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == '__main__':

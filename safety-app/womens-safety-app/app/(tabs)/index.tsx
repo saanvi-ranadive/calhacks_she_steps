@@ -1,98 +1,116 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { View, StyleSheet, ActivityIndicator, Alert, Text } from 'react-native';
+import MapView, { Marker, Circle } from 'react-native-maps';
+import axios from 'axios';
 
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+const API_URL = 'http://localhost:5001'; // change to your IP if testing on phone
 
-export default function HomeScreen() {
+export default function MapScreen() {
+  const [heatmap, setHeatmap] = useState([]);
+  const [clicked, setClicked] = useState<{ lat: number; lon: number } | null>(null);
+  const [risk, setRisk] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    loadHeatmap();
+  }, []);
+
+  async function loadHeatmap() {
+    try {
+      const res = await axios.get(`${API_URL}/api/heatmap`);
+      setHeatmap(res.data.grid);
+    } catch (err) {
+      Alert.alert('Error', 'Could not load heatmap data.');
+    }
+  }
+
+  async function checkRisk(lat: number, lon: number) {
+    setClicked({ lat, lon });
+    setLoading(true);
+    try {
+      const res = await axios.post(`${API_URL}/api/risk`, {
+        latitude: lat,
+        longitude: lon,
+      });
+      setRisk(res.data);
+    } catch {
+      Alert.alert('Error', 'Cannot connect to backend.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const getColor = (r: number) =>
+    r < 0.3 ? '#10B981' : r < 0.7 ? '#F59E0B' : '#EF4444';
+  const getRadius = (r: number) => 150 + r * 300;
+
   return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+    <View style={{ flex: 1 }}>
+      <MapView
+        style={StyleSheet.absoluteFillObject}
+        initialRegion={{
+          latitude: 37.7749,
+          longitude: -122.4194,
+          latitudeDelta: 0.1,
+          longitudeDelta: 0.1,
+        }}
+        onPress={(e) => {
+          const { latitude, longitude } = e.nativeEvent.coordinate;
+          checkRisk(latitude, longitude);
+        }}
+      >
+        {heatmap.map((p: any, i: number) => (
+          <Circle
+            key={i}
+            center={{ latitude: p.lat, longitude: p.lon }}
+            radius={getRadius(p.risk)}
+            fillColor={`${getColor(p.risk)}55`} // adds transparency (last two chars = alpha)
+            strokeColor="transparent"           // no border
+            strokeWidth={0}
+          />
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+        ))}
+
+        {clicked && (
+          <Marker
+            coordinate={{ latitude: clicked.lat, longitude: clicked.lon }}
+            pinColor={risk?.color || '#8B5CF6'}
+          />
+        )}
+      </MapView>
+
+      {loading && <ActivityIndicator style={styles.loader} size="large" color="#8B5CF6" />}
+
+      {risk && !loading && (
+        <View style={[styles.card, { borderLeftColor: risk.color }]}>
+          <Text style={[styles.title, { color: risk.color }]}>
+            {risk.risk_level.toUpperCase()}
+          </Text>
+          <Text>Risk Score: {(risk.risk_score * 100).toFixed(0)}%</Text>
+          <Text style={styles.coords}>
+            {risk.latitude.toFixed(4)}, {risk.longitude.toFixed(4)}
+          </Text>
+        </View>
+      )}
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
-  },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
+  loader: { position: 'absolute', top: '50%', left: '50%' },
+  card: {
     position: 'absolute',
+    bottom: 30,
+    left: 20,
+    right: 20,
+    backgroundColor: 'white',
+    padding: 16,
+    borderRadius: 8,
+    borderLeftWidth: 6,
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
   },
+  title: { fontSize: 22, fontWeight: 'bold', marginBottom: 4 },
+  coords: { color: '#9CA3AF', marginTop: 4 },
 });
