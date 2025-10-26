@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { View, StyleSheet, ActivityIndicator, Alert, Text, TouchableOpacity, Platform, PermissionsAndroid, TextInput, Keyboard } from 'react-native';
+import { View, StyleSheet, ActivityIndicator, Alert, Text, TouchableOpacity, Platform, PermissionsAndroid, TextInput, Keyboard, Vibration } from 'react-native';
 import MapView, { Marker, Circle, Polyline } from 'react-native-maps';
 import Geolocation from 'react-native-geolocation-service';
 import axios from 'axios';
@@ -13,6 +13,16 @@ interface Route {
   color: string;
   distance: number;
   duration: number;
+  instructions?: string[];
+  dangerZones?: DangerZone[];
+}
+
+interface DangerZone {
+  startIndex: number;
+  endIndex: number;
+  riskLevel: 'moderate' | 'high';
+  color: string;
+  coordinates: { latitude: number; longitude: number }[];
 }
 
 export default function MapScreen() {
@@ -30,6 +40,15 @@ export default function MapScreen() {
   const [selectedRoute, setSelectedRoute] = useState<number | null>(null);
   const [routesLoading, setRoutesLoading] = useState(false);
 
+  // Navigation state
+  const [isNavigating, setIsNavigating] = useState(false);
+  const [currentInstruction, setCurrentInstruction] = useState(0);
+  const [distanceToDestination, setDistanceToDestination] = useState(0);
+  const [distanceToNext, setDistanceToNext] = useState(0);
+  const [nearbyDangerZone, setNearbyDangerZone] = useState<DangerZone | null>(null);
+  const [hasAlertedDanger, setHasAlertedDanger] = useState(false);
+  const navigationIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
   useEffect(() => {
     loadHeatmap();
     requestLocationPermission();
@@ -38,6 +57,9 @@ export default function MapScreen() {
     return () => {
       if (watchIdRef.current !== null) {
         Geolocation.clearWatch(watchIdRef.current);
+      }
+      if (navigationIntervalRef.current) {
+        clearInterval(navigationIntervalRef.current);
       }
     };
   }, []); // Empty dependency array - only run once on mount
@@ -461,6 +483,235 @@ export default function MapScreen() {
     r < 0.3 ? '#10B981' : r < 0.7 ? '#F59E0B' : '#EF4444';
   const getRadius = (r: number) => 150 + r * 300;
 
+  // Calculate distance between two coordinates in meters
+  function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+    const R = 6371e3; // Earth's radius in meters
+    const φ1 = (lat1 * Math.PI) / 180;
+    const φ2 = (lat2 * Math.PI) / 180;
+    const Δφ = ((lat2 - lat1) * Math.PI) / 180;
+    const Δλ = ((lon2 - lon1) * Math.PI) / 180;
+
+    const a =
+      Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+      Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+    return R * c; // Distance in meters
+  }
+
+  // Identify danger zones along the route
+  async function identifyDangerZones(route: Route): Promise<DangerZone[]> {
+    const dangerZones: DangerZone[] = [];
+    const coordinates = route.coordinates;
+
+    // Check every 10th point for risk (adjust granularity as needed)
+    const checkInterval = Math.max(1, Math.floor(coordinates.length / 30));
+    let currentZone: DangerZone | null = null;
+
+    for (let i = 0; i < coordinates.length; i += checkInterval) {
+      const point = coordinates[i];
+
+      try {
+        const now = new Date();
+        const hour = now.getHours();
+        const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        const day_of_week = daysOfWeek[now.getDay()];
+
+        const res = await axios.post(`${API_URL}/api/ml/predict-risk`, {
+          latitude: point.latitude,
+          longitude: point.longitude,
+          hour: hour,
+          day_of_week: day_of_week,
+        });
+
+        const riskLabel = res.data.risk_label; // 0 = safe, 1 = moderate, 2 = high
+
+        if (riskLabel >= 1) {
+          // Moderate or high risk
+          if (!currentZone) {
+            // Start new danger zone
+            currentZone = {
+              startIndex: i,
+              endIndex: i,
+              riskLevel: riskLabel === 1 ? 'moderate' : 'high',
+              color: riskLabel === 1 ? '#F59E0B' : '#EF4444',
+              coordinates: [point],
+            };
+          } else {
+            // Extend current zone
+            currentZone.endIndex = i;
+            currentZone.coordinates.push(point);
+            // Update risk level if higher
+            if (riskLabel === 2) {
+              currentZone.riskLevel = 'high';
+              currentZone.color = '#EF4444';
+            }
+          }
+        } else {
+          // Safe zone - close current danger zone if any
+          if (currentZone) {
+            dangerZones.push(currentZone);
+            currentZone = null;
+          }
+        }
+      } catch (error) {
+        console.error('Error checking danger zone:', error);
+      }
+    }
+
+    // Add last zone if exists
+    if (currentZone) {
+      dangerZones.push(currentZone);
+    }
+
+    console.log(`🚨 Identified ${dangerZones.length} danger zones along route`);
+    return dangerZones;
+  }
+
+  // Start navigation
+  async function startNavigation() {
+    if (selectedRoute === null || !routes[selectedRoute]) {
+      Alert.alert('Error', 'Please select a route first');
+      return;
+    }
+
+    const route = routes[selectedRoute];
+
+    // Identify danger zones
+    setRoutesLoading(true);
+    const dangerZones = await identifyDangerZones(route);
+
+    // Update route with danger zones
+    const updatedRoutes = [...routes];
+    updatedRoutes[selectedRoute] = { ...route, dangerZones };
+    setRoutes(updatedRoutes);
+    setRoutesLoading(false);
+
+    // Start navigation
+    setIsNavigating(true);
+    setCurrentInstruction(0);
+    setHasAlertedDanger(false);
+
+    // Start tracking navigation progress
+    navigationIntervalRef.current = setInterval(() => {
+      if (userLocation) {
+        updateNavigationProgress(userLocation, updatedRoutes[selectedRoute]);
+      }
+    }, 2000); // Update every 2 seconds
+
+    Alert.alert(
+      'Navigation Started',
+      `Follow the ${route.riskLevel} route. Stay alert in danger zones!`,
+      [{ text: 'OK' }]
+    );
+  }
+
+  // Stop navigation
+  function stopNavigation() {
+    setIsNavigating(false);
+    setCurrentInstruction(0);
+    setNearbyDangerZone(null);
+    setHasAlertedDanger(false);
+
+    if (navigationIntervalRef.current) {
+      clearInterval(navigationIntervalRef.current);
+      navigationIntervalRef.current = null;
+    }
+
+    Alert.alert('Navigation Ended', 'You have stopped navigation.');
+  }
+
+  // Update navigation progress
+  function updateNavigationProgress(location: { lat: number; lon: number }, route: Route) {
+    const coords = route.coordinates;
+
+    // Find closest point on route
+    let minDistance = Infinity;
+    let closestIndex = 0;
+
+    for (let i = 0; i < coords.length; i++) {
+      const dist = calculateDistance(location.lat, location.lon, coords[i].latitude, coords[i].longitude);
+      if (dist < minDistance) {
+        minDistance = dist;
+        closestIndex = i;
+      }
+    }
+
+    // Calculate remaining distance to destination
+    let remainingDist = 0;
+    for (let i = closestIndex; i < coords.length - 1; i++) {
+      remainingDist += calculateDistance(
+        coords[i].latitude,
+        coords[i].longitude,
+        coords[i + 1].latitude,
+        coords[i + 1].longitude
+      );
+    }
+    setDistanceToDestination(remainingDist);
+
+    // Check if arrived (within 20 meters of destination)
+    if (remainingDist < 20) {
+      stopNavigation();
+      Alert.alert('Arrived!', 'You have reached your destination safely! 🎉');
+      return;
+    }
+
+    // Check proximity to danger zones
+    if (route.dangerZones) {
+      checkDangerProximity(location, route.dangerZones, coords);
+    }
+  }
+
+  // Check if user is near a danger zone
+  function checkDangerProximity(
+    location: { lat: number; lon: number },
+    dangerZones: DangerZone[],
+    routeCoords: { latitude: number; longitude: number }[]
+  ) {
+    const ALERT_DISTANCE = 150; // Alert when within 150 meters of danger zone
+
+    for (const zone of dangerZones) {
+      // Check distance to start of danger zone
+      const distToZone = calculateDistance(
+        location.lat,
+        location.lon,
+        zone.coordinates[0].latitude,
+        zone.coordinates[0].longitude
+      );
+
+      if (distToZone <= ALERT_DISTANCE) {
+        setNearbyDangerZone(zone);
+
+        // Only alert once per danger zone
+        if (!hasAlertedDanger) {
+          Vibration.vibrate([0, 200, 100, 200]); // Vibration pattern
+          Alert.alert(
+            '⚠️ Danger Zone Ahead',
+            `${zone.riskLevel.toUpperCase()} risk area in ${Math.round(distToZone)} meters. Stay alert!`,
+            [{ text: 'OK' }]
+          );
+          setHasAlertedDanger(true);
+        }
+        return;
+      }
+    }
+
+    // Reset if no longer near danger zone
+    if (nearbyDangerZone) {
+      const distFromZone = calculateDistance(
+        location.lat,
+        location.lon,
+        nearbyDangerZone.coordinates[nearbyDangerZone.coordinates.length - 1].latitude,
+        nearbyDangerZone.coordinates[nearbyDangerZone.coordinates.length - 1].longitude
+      );
+
+      if (distFromZone > ALERT_DISTANCE) {
+        setNearbyDangerZone(null);
+        setHasAlertedDanger(false);
+      }
+    }
+  }
+
   return (
     <View style={{ flex: 1 }}>
       <MapView
@@ -518,6 +769,18 @@ export default function MapScreen() {
             onPress={() => setSelectedRoute(index)}
           />
         ))}
+
+        {/* Highlight danger zones on selected route */}
+        {selectedRoute !== null && routes[selectedRoute]?.dangerZones?.map((zone, idx) => (
+          <Polyline
+            key={`danger-${idx}`}
+            coordinates={zone.coordinates}
+            strokeColor={zone.color}
+            strokeWidth={8}
+            zIndex={150}
+            lineDashPattern={[10, 5]} // Dashed line for danger zones
+          />
+        ))}
       </MapView>
 
       {userLocation && (
@@ -553,7 +816,7 @@ export default function MapScreen() {
       </View>
 
       {/* Route selection panel */}
-      {routes.length > 0 && (
+      {routes.length > 0 && !isNavigating && (
         <View style={styles.routesPanel}>
           <Text style={styles.routesPanelTitle}>Routes (Tap to select)</Text>
           {routes.map((route, index) => (
@@ -577,7 +840,73 @@ export default function MapScreen() {
               </Text>
             </TouchableOpacity>
           ))}
+
+          {/* Start Navigation Button */}
+          {selectedRoute !== null && (
+            <TouchableOpacity
+              style={styles.startNavigationButton}
+              onPress={startNavigation}
+              disabled={routesLoading}
+            >
+              {routesLoading ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Text style={styles.startNavigationButtonText}>🧭 Start Navigation</Text>
+              )}
+            </TouchableOpacity>
+          )}
         </View>
+      )}
+
+      {/* Navigation Control Panel */}
+      {isNavigating && selectedRoute !== null && (
+        <View style={styles.navigationPanel}>
+          <View style={styles.navigationHeader}>
+            <Text style={styles.navigationTitle}>Navigation Active</Text>
+            <TouchableOpacity
+              style={styles.stopNavigationButton}
+              onPress={stopNavigation}
+            >
+              <Text style={styles.stopNavigationButtonText}>✕ Stop</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.navigationInfo}>
+            <Text style={styles.navigationDistance}>
+              📍 {distanceToDestination >= 1000
+                ? `${(distanceToDestination / 1000).toFixed(1)} km`
+                : `${Math.round(distanceToDestination)} m`} remaining
+            </Text>
+
+            {nearbyDangerZone && (
+              <View style={[styles.dangerAlert, { backgroundColor: nearbyDangerZone.color + '22' }]}>
+                <Text style={[styles.dangerAlertText, { color: nearbyDangerZone.color }]}>
+                  ⚠️ {nearbyDangerZone.riskLevel.toUpperCase()} RISK ZONE AHEAD
+                </Text>
+                <Text style={styles.dangerAlertSubtext}>Stay alert and be aware of your surroundings</Text>
+              </View>
+            )}
+          </View>
+        </View>
+      )}
+
+      {/* SOS Emergency Button - Always visible during navigation */}
+      {isNavigating && (
+        <TouchableOpacity
+          style={styles.sosButton}
+          onPress={() => {
+            Alert.alert(
+              '🚨 Emergency SOS',
+              'Emergency features coming soon:\n\n• Call 911\n• Alert emergency contacts\n• Share live location\n• Start audio recording',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Call 911', onPress: () => console.log('Call 911') }
+              ]
+            );
+          }}
+        >
+          <Text style={styles.sosButtonText}>SOS</Text>
+        </TouchableOpacity>
       )}
 
       {loading && <ActivityIndicator style={styles.loader} size="large" color="#8B5CF6" />}
@@ -725,5 +1054,104 @@ const styles = StyleSheet.create({
   routeDetails: {
     fontSize: 12,
     color: '#374151',
+  },
+  startNavigationButton: {
+    backgroundColor: '#10B981',
+    padding: 14,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginTop: 8,
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
+  },
+  startNavigationButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  navigationPanel: {
+    position: 'absolute',
+    top: 130,
+    left: 20,
+    right: 20,
+    backgroundColor: 'white',
+    padding: 16,
+    borderRadius: 8,
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
+  },
+  navigationHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  navigationTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#10B981',
+  },
+  stopNavigationButton: {
+    backgroundColor: '#EF4444',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  stopNavigationButtonText: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  navigationInfo: {
+    gap: 12,
+  },
+  navigationDistance: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#374151',
+  },
+  dangerAlert: {
+    padding: 12,
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: '#EF4444',
+  },
+  dangerAlertText: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    marginBottom: 4,
+  },
+  dangerAlertSubtext: {
+    fontSize: 12,
+    color: '#6B7280',
+  },
+  sosButton: {
+    position: 'absolute',
+    bottom: 40,
+    right: 20,
+    backgroundColor: '#DC2626',
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 8,
+    borderWidth: 4,
+    borderColor: 'white',
+  },
+  sosButtonText: {
+    color: 'white',
+    fontSize: 20,
+    fontWeight: 'bold',
   },
 });
