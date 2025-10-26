@@ -60,6 +60,9 @@ def train_model():
     data = resp.json()
     # --- Data preprocessing ---
     df = pd.DataFrame(data)
+    df['latitude'] = pd.to_numeric(df['latitude'], errors='coerce')
+    df['longitude'] = pd.to_numeric(df['longitude'], errors='coerce')
+    df = df.dropna(subset=['latitude', 'longitude'])
     drop_cols = [
         'row_id', 'report_datetime', 'incident_id', 'incident_number', 'filed_online', ':@computed_region_n4xg_c4py', 
         ':@computed_region_nqbw_i6c3', ':@computed_region_h4ep_8xdi', ':@computed_region_jg9y_a9du', 
@@ -91,6 +94,19 @@ def train_model():
         on=['incident_year', 'incident_week', 'lat_bin', 'lon_bin'], how='left'
     )
     df = df.dropna(subset=['risk_label'])
+
+
+    numeric_candidates = [
+    "latitude", "longitude", "incident_hour", "incident_week",
+    "incident_year", "hour_sin", "hour_cos", "lat_bin", "lon_bin"
+    ]
+    for col in numeric_candidates:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Fill NaN coordinates if any after conversion
+    df = df.dropna(subset=["latitude", "longitude"])
+
     # Final feature matrix/labels
     X = df[numeric_cols + cat_cols]
     y = df['risk_label']
@@ -114,6 +130,14 @@ def train_model():
             n_estimators=500, min_samples_split=10, min_samples_leaf=5, max_features=None, 
             max_depth=5, learning_rate=0.05, random_state=0))
     ])
+
+    # Ensure all numeric columns are actually numeric
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Drop rows where conversion failed
+    df = df.dropna(subset=numeric_cols)
+    print("Dtypes after conversion:\n", df[numeric_cols].dtypes)
 
     pipe.fit(X, y)
     _model_ready = True

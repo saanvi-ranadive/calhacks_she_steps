@@ -5,8 +5,10 @@ import os
 from datetime import datetime
 
 # Ensure ML path import
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'ml'))
-from test import predict_risk_label, train_model, _model_ready
+ml_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'ml'))
+if ml_path not in sys.path:
+    sys.path.insert(0, ml_path)
+from model_utils import predict_risk_label, train_model, _model_ready
 
 geolocation_api = Blueprint('geolocation_api', __name__)
 
