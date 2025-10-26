@@ -12,8 +12,10 @@
       "supportsTablet": true,
       "infoPlist": {
         "NSMicrophoneUsageDescription": "This app needs access to your microphone to communicate with the voice assistant.",
-        "NSCameraUsageDescription": "This app needs access to your camera for video features."
-      }
+        "NSCameraUsageDescription": "This app needs access to your camera for video features.",
+        "NSLocationWhenInUseUsageDescription": "This app needs your location to show safety information for your current area."
+      },
+      "bundleIdentifier": "com.anonymous.womens-safety-app"
     },
     "android": {
       "adaptiveIcon": {
@@ -27,7 +29,9 @@
       "permissions": [
         "RECORD_AUDIO",
         "CAMERA",
-        "MODIFY_AUDIO_SETTINGS"
+        "MODIFY_AUDIO_SETTINGS",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION"
       ]
     },
     "web": {

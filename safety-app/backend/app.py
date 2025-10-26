@@ -5,13 +5,35 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import random
 import os
+import sys
 from dotenv import load_dotenv
 from livekit import api
+from geolocation_api import geolocation_api
 
 load_dotenv()
 
 app = Flask(__name__)
 CORS(app)  # Allow React Native to call this API
+
+# Register ML-based geolocation prediction blueprint
+app.register_blueprint(geolocation_api, url_prefix='/api/ml')
+
+# Pre-train ML model on startup for faster predictions
+print("🤖 Pre-training ML model for faster predictions...")
+try:
+    ml_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'ml'))
+    if ml_path not in sys.path:
+        sys.path.insert(0, ml_path)
+    from model_utils import train_model, _model_ready
+
+    if not _model_ready:
+        train_model()
+        print("✅ ML model trained and ready!")
+    else:
+        print("✅ ML model already trained!")
+except Exception as e:
+    print(f"⚠️  Warning: Could not pre-train ML model: {e}")
+    print("   Model will be trained on first prediction request.")
 
 # LiveKit configuration
 LIVEKIT_API_KEY = os.getenv('LIVEKIT_API_KEY')
