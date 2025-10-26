@@ -6,6 +6,8 @@ from flask_cors import CORS
 import random
 import os
 import sys
+import json
+from datetime import datetime
 from dotenv import load_dotenv
 from livekit import api
 from geolocation_api import geolocation_api
@@ -139,12 +141,21 @@ def get_heatmap():
 @app.route('/api/voice-agent/token', methods=['POST'])
 def get_voice_agent_token():
     """
-    Generate a LiveKit token for voice agent connection
+    Generate a LiveKit token for voice agent connection and dispatch agent with user context
 
     POST body:
     {
         "roomName": "room-name",
-        "participantName": "user-name"
+        "participantName": "user-name",
+        "location": {
+            "lat": 37.7749,
+            "lon": -122.4194,
+            "address": "123 Main St, Berkeley, CA"
+        },
+        "user_profile": {
+            "name": "Jane Doe",
+            "age": 25
+        }
     }
     """
     if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET:
@@ -157,7 +168,7 @@ def get_voice_agent_token():
     participant_name = data.get('participantName', 'User')
 
     try:
-        # Create access token
+        # Create access token for user
         token = api.AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
         token.with_identity(participant_name)
         token.with_name(participant_name)
@@ -170,6 +181,33 @@ def get_voice_agent_token():
 
         jwt_token = token.to_jwt()
 
+        # Build user context for agent
+        user_context = {
+            "location": data.get('location', {}),
+            "user_profile": data.get('user_profile', {}),
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        # NOTE: Agent dispatch is commented out for now as it requires explicit agent name
+        # The agent will auto-join the room without dispatch
+        # If you want to dispatch with context, uncomment below and ensure agent has agent_name set
+
+        # try:
+        #     livekit_api = api.LiveKitAPI(
+        #         url=LIVEKIT_URL,
+        #         api_key=LIVEKIT_API_KEY,
+        #         api_secret=LIVEKIT_API_SECRET,
+        #     )
+        #     dispatch_response = livekit_api.agent_dispatch.create_dispatch(
+        #         api.CreateAgentDispatchRequest(
+        #             room=room_name,
+        #             metadata=json.dumps(user_context)
+        #         )
+        #     )
+        #     print(f"🤖 Voice agent dispatched to room: {room_name}")
+        # except Exception as e:
+        #     print(f"⚠️  Warning: Could not dispatch agent: {e}")
+
         return jsonify({
             "token": jwt_token,
             "url": LIVEKIT_URL,
@@ -179,8 +217,94 @@ def get_voice_agent_token():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/emergency/dispatch', methods=['POST'])
+def dispatch_emergency_call():
+    """
+    Dispatch an emergency 911 call with context
+
+    POST body:
+    {
+        "phone_number": "+1911" or test number,
+        "emergency_type": "assault" | "medical" | "danger",
+        "situation": "Description of the emergency",
+        "location": {
+            "lat": 37.7749,
+            "lon": -122.4194,
+            "address": "123 Main St, Berkeley, CA"
+        },
+        "user_profile": {
+            "name": "Jane Doe",
+            "phone": "+15551234567",
+            "age": 25,
+            "medical_conditions": "None"
+        },
+        "audio_transcript": "Optional transcript of user's description"
+    }
+    """
+    try:
+        data = request.get_json()
+
+        # Validate required fields
+        if not data.get('phone_number'):
+            return jsonify({"error": "phone_number is required"}), 400
+
+        # Get SIP trunk ID from environment
+        sip_trunk_id = os.getenv('SIP_TRUNK_ID')
+        if not sip_trunk_id:
+            return jsonify({"error": "SIP_TRUNK_ID not configured"}), 500
+
+        # Build emergency context
+        emergency_context = {
+            "phone_number": data.get('phone_number'),
+            "sip_trunk_id": sip_trunk_id,
+            "emergency_type": data.get('emergency_type', 'Safety emergency'),
+            "situation": data.get('situation', 'User pressed emergency button'),
+            "location": data.get('location', {}),
+            "user_profile": data.get('user_profile', {}),
+            "audio_transcript": data.get('audio_transcript', ''),
+            "timestamp": datetime.now().isoformat(),
+            "user_id": data.get('user_id', 'anonymous'),
+        }
+
+        # Create LiveKit API client
+        livekit_api = api.LiveKitAPI(
+            url=LIVEKIT_URL,
+            api_key=LIVEKIT_API_KEY,
+            api_secret=LIVEKIT_API_SECRET,
+        )
+
+        # Generate unique room name for this emergency call
+        import random
+        room_name = f"emergency-{''.join(str(random.randint(0, 9)) for _ in range(10))}"
+
+        # Dispatch the emergency agent
+        dispatch_response = livekit_api.agent_dispatch.create_dispatch(
+            api.CreateAgentDispatchRequest(
+                agent_name="emergency-911-agent",
+                room=room_name,
+                metadata=json.dumps(emergency_context)
+            )
+        )
+
+        print(f"🚨 Emergency call dispatched: {room_name}")
+        print(f"   Emergency type: {emergency_context['emergency_type']}")
+        print(f"   Location: {emergency_context['location'].get('address', 'Unknown')}")
+
+        return jsonify({
+            "success": True,
+            "room_name": room_name,
+            "dispatch_id": dispatch_response.dispatch_id if hasattr(dispatch_response, 'dispatch_id') else None,
+            "message": "Emergency call initiated"
+        })
+
+    except Exception as e:
+        print(f"❌ Error dispatching emergency call: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == '__main__':
     print("🚀 Starting backend server on http://localhost:5001")
     print("📍 Test endpoint: POST http://localhost:5001/api/risk")
     print("🗺️  Heat map endpoint: GET http://localhost:5001/api/heatmap")
+    print("🚨 Emergency dispatch: POST http://localhost:5001/api/emergency/dispatch")
     app.run(debug=True, host='0.0.0.0', port=5001)

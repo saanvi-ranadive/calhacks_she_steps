@@ -6,6 +6,8 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Alert,
+  Platform,
+  PermissionsAndroid,
 } from 'react-native';
 import {
   LiveKitRoom,
@@ -15,6 +17,8 @@ import {
   useLocalParticipant,
 } from '@livekit/react-native';
 import { RoomEvent } from 'livekit-client';
+import Geolocation from 'react-native-geolocation-service';
+import axios from 'axios';
 
 const LIVEKIT_URL = process.env.EXPO_PUBLIC_LIVEKIT_URL || 'wss://your-livekit-url.livekit.cloud';
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:5001';
@@ -134,19 +138,85 @@ export default function VoiceAgentScreen() {
     };
   }, []);
 
+  const getCurrentLocation = async (): Promise<{ lat: number; lon: number; address: string } | null> => {
+    try {
+      // Request location permission
+      if (Platform.OS === 'android') {
+        const granted = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
+        );
+        if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+          console.log('Location permission denied');
+          return null;
+        }
+      }
+
+      return new Promise((resolve) => {
+        Geolocation.getCurrentPosition(
+          async (position) => {
+            const lat = position.coords.latitude;
+            const lon = position.coords.longitude;
+
+            // Reverse geocode to get address
+            let address = 'Address unavailable';
+            try {
+              const GOOGLE_MAPS_API_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '';
+              const geoResponse = await axios.get(
+                `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lon}&key=${GOOGLE_MAPS_API_KEY}`
+              );
+              if (geoResponse.data.status === 'OK' && geoResponse.data.results.length > 0) {
+                address = geoResponse.data.results[0].formatted_address;
+              }
+            } catch (error) {
+              console.error('Error getting address:', error);
+            }
+
+            resolve({ lat, lon, address });
+          },
+          (error) => {
+            console.error('Error getting location:', error);
+            resolve(null);
+          },
+          { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 }
+        );
+      });
+    } catch (error) {
+      console.error('Error in getCurrentLocation:', error);
+      return null;
+    }
+  };
+
   const connectToAgent = async () => {
     setIsLoading(true);
     try {
+      // Get current location
+      const location = await getCurrentLocation();
+
+      // Build request payload with context
+      const payload = {
+        roomName: `safety-agent-${Date.now()}`,
+        participantName: 'User',
+        location: location ? {
+          lat: location.lat,
+          lon: location.lon,
+          address: location.address,
+        } : undefined,
+        user_profile: {
+          // TODO: Get from user settings/authentication
+          name: 'User',
+          age: 25,
+        },
+      };
+
+      console.log('🤖 Connecting to voice agent with context:', payload.location);
+
       // Request a token from your backend
       const response = await fetch(`${API_URL}/api/voice-agent/token`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          roomName: `safety-agent-${Date.now()}`,
-          participantName: 'User',
-        }),
+        body: JSON.stringify(payload),
       });
 
       if (!response.ok) {

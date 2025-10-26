@@ -712,6 +712,117 @@ export default function MapScreen() {
     }
   }
 
+  // Handle SOS emergency button press
+  async function handleSOSPress() {
+    // Vibrate immediately
+    Vibration.vibrate([0, 500, 200, 500]);
+
+    Alert.alert(
+      '🚨 EMERGENCY',
+      'What type of emergency are you experiencing?',
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+          onPress: () => console.log('Emergency cancelled'),
+        },
+        {
+          text: 'Immediate Danger',
+          style: 'destructive',
+          onPress: () => dispatchEmergencyCall('assault', 'User reported immediate danger'),
+        },
+        {
+          text: 'Medical Emergency',
+          onPress: () => dispatchEmergencyCall('medical', 'User reported medical emergency'),
+        },
+        {
+          text: 'Feel Unsafe',
+          onPress: () => dispatchEmergencyCall('danger', 'User feels unsafe in current location'),
+        },
+      ],
+      { cancelable: false }
+    );
+  }
+
+  // Dispatch emergency call with full context
+  async function dispatchEmergencyCall(emergencyType: string, situation: string) {
+    try {
+      if (!userLocation) {
+        Alert.alert('Error', 'Unable to get your location for emergency call');
+        return;
+      }
+
+      // Show loading alert
+      Alert.alert('🚨 Calling Emergency Services', 'Please wait...');
+
+      // Reverse geocode current location to get address
+      let address = 'Address unavailable';
+      try {
+        const GOOGLE_MAPS_API_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '';
+        const geoResponse = await axios.get(
+          `https://maps.googleapis.com/maps/api/geocode/json?latlng=${userLocation.lat},${userLocation.lon}&key=${GOOGLE_MAPS_API_KEY}`
+        );
+        if (geoResponse.data.status === 'OK' && geoResponse.data.results.length > 0) {
+          address = geoResponse.data.results[0].formatted_address;
+        }
+      } catch (error) {
+        console.error('Error getting address:', error);
+      }
+
+      // Build emergency context
+      const emergencyContext = {
+        // NOTE: For testing, use your own phone number. In production, this would be 911
+        phone_number: '+1YOUR_TEST_NUMBER', // Replace with test number or 911
+        emergency_type: emergencyType,
+        situation: situation,
+        location: {
+          lat: userLocation.lat,
+          lon: userLocation.lon,
+          address: address,
+        },
+        user_profile: {
+          // TODO: Get from user profile/settings
+          name: 'App User',
+          phone: '+1234567890',
+          age: 25,
+          medical_conditions: 'None reported',
+        },
+        timestamp: new Date().toISOString(),
+        user_id: 'test_user_123', // TODO: Get from authentication
+      };
+
+      console.log('🚨 Dispatching emergency call:', emergencyContext);
+
+      // Call backend to dispatch emergency agent
+      const response = await axios.post(`${API_URL}/api/emergency/dispatch`, emergencyContext);
+
+      if (response.data.success) {
+        Alert.alert(
+          'Emergency Call Initiated',
+          `Emergency services are being contacted.\n\nRoom: ${response.data.room_name}\n\nStay on the line and the AI agent will relay your information to the dispatcher.`,
+          [{ text: 'OK' }]
+        );
+
+        console.log('✅ Emergency call dispatched successfully');
+      } else {
+        throw new Error('Failed to dispatch emergency call');
+      }
+    } catch (error) {
+      console.error('❌ Error dispatching emergency call:', error);
+      Alert.alert(
+        'Emergency Call Failed',
+        'Unable to connect to emergency services. Please dial 911 directly.\n\nError: ' + (error as Error).message,
+        [
+          { text: 'OK' },
+          {
+            text: 'Retry',
+            onPress: () => dispatchEmergencyCall(emergencyType, situation),
+          },
+        ]
+      );
+    }
+  }
+
   return (
     <View style={{ flex: 1 }}>
       <MapView
@@ -894,16 +1005,7 @@ export default function MapScreen() {
       {isNavigating && (
         <TouchableOpacity
           style={styles.sosButton}
-          onPress={() => {
-            Alert.alert(
-              '🚨 Emergency SOS',
-              'Emergency features coming soon:\n\n• Call 911\n• Alert emergency contacts\n• Share live location\n• Start audio recording',
-              [
-                { text: 'Cancel', style: 'cancel' },
-                { text: 'Call 911', onPress: () => console.log('Call 911') }
-              ]
-            );
-          }}
+          onPress={handleSOSPress}
         >
           <Text style={styles.sosButtonText}>SOS</Text>
         </TouchableOpacity>
