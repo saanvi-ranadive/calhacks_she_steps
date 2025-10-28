@@ -23,6 +23,6 @@ SheSteps is a mobile safety app that leverages machine learning and AI voice ass
 **APIs & Services**: Claude API, Google Maps, LiveKit
 
 ### Demo
-[Watch the demo video](<youtube.com/watch?reload=9&v=ow_1uuKUysY&t=3s>) or explore the prototype UI below:
+[Watch the demo video](<youtube.com/watch?reload=9&v=ow_1uuKUysY&t=3s>) or [view the full project on Devpost](https://devpost.com/software/shesteps).
 
 
